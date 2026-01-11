@@ -65,6 +65,58 @@ function autenticarToken(req, res, next) {
     });
 }
 
+// Função para criar usuários fixos
+async function criarUsuariosFixos() {
+    const usuariosFixos = [
+        {
+            nome: 'Victor Sobral de Moraes',
+            email: 'v.moraes@ba.estudante.senai.br',
+            senha: 'q1w2e3r4t5*'
+        },
+        {
+            nome: 'Sara Melo',
+            email: 'sara.m.jesus@ba.estudante.senai.br',
+            senha: 'saracapricorniana'
+        },
+        {
+            nome: 'Fernanda Dantas Moreira Cruz',
+            email: 'fernanda.d.cruz@ba.estudante.senai.br',
+            senha: 'fernadagloss'
+        }
+    ];
+
+    console.log('🔄 Verificando usuários fixos...');
+    
+    for (const usuarioData of usuariosFixos) {
+        try {
+            // Verifica se o usuário já existe
+            const usuarioExistente = await Usuario.findOne({ 
+                where: { email: usuarioData.email } 
+            });
+
+            if (!usuarioExistente) {
+                // Cria hash da senha
+                const hash = await bcrypt.hash(usuarioData.senha, 10);
+                
+                // Cria o usuário
+                await Usuario.create({
+                    nome: usuarioData.nome,
+                    email: usuarioData.email,
+                    senha: hash
+                });
+                
+                console.log(`✅ Usuário criado: ${usuarioData.nome} (${usuarioData.email})`);
+            } else {
+                console.log(`ℹ️  Usuário já existe: ${usuarioData.nome} (${usuarioData.email})`);
+            }
+        } catch (error) {
+            console.error(`❌ Erro ao criar usuário ${usuarioData.email}:`, error.message);
+        }
+    }
+    
+    console.log('✅ Verificação de usuários fixos concluída!\n');
+}
+
 // ROTA DE TESTE
 app.get('/', (req, res) => {
     res.send('API está funcionando!');
@@ -211,12 +263,15 @@ app.delete('/mensagens/:id', autenticarToken, async (req, res) => {
 
 // SINCRONIZA O MODELO COM O BANCO DE DADOS E INICIA O SERVIDOR
 sequelize.sync().then(async () => {
+    // Cria usuários fixos automaticamente
+    await criarUsuariosFixos();
+    
     // Verifica quantas mensagens existem
     const count = await Mensagem.count();
-    console.log(`🚀API rodando em http://localhost:${port}`);
-    console.log('🚀Conectado ao banco de dados MySQL.');
+    console.log(`🚀 API rodando em http://localhost:${port}`);
+    console.log('🚀 Conectado ao banco de dados MySQL.');
     console.log(`📊 Total de mensagens no banco: ${count}`);
     app.listen(port);
 }).catch(err => {
-    console.error('Não foi possível conectar ao banco de dados:');
+    console.error('Não foi possível conectar ao banco de dados:', err);
 });
