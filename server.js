@@ -4,11 +4,30 @@ const { Sequelize, DataTypes } = require('sequelize');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 
-// Criando conexão com o banco de dados MySQL.
-const sequelize = new Sequelize('bancadamc', 'root', '', {
-    host: 'localhost',
-    dialect: 'mysql'
-});
+// Configuração do banco de dados PostgreSQL (Vercel Postgres)
+const sequelize = new Sequelize(
+    process.env.POSTGRES_DATABASE || 'verceldb',
+    process.env.POSTGRES_USER || 'default',
+    process.env.POSTGRES_PASSWORD || '',
+    {
+        host: process.env.POSTGRES_HOST || 'localhost',
+        port: process.env.POSTGRES_PORT || 5432,
+        dialect: 'postgres',
+        dialectOptions: {
+            ssl: process.env.NODE_ENV === 'production' ? {
+                require: true,
+                rejectUnauthorized: false
+            } : false
+        },
+        logging: false,
+        pool: {
+            max: 5,
+            min: 0,
+            acquire: 30000,
+            idle: 10000
+        }
+    }
+);
 
 // Modelo para tabela de usuários
 const Usuario = sequelize.define('Usuario', {
@@ -25,6 +44,9 @@ const Usuario = sequelize.define('Usuario', {
         type: DataTypes.STRING,
         allowNull: false
     }
+}, {
+    tableName: 'usuarios',
+    timestamps: true
 });
 
 // Modelo para tabela de mensagens
@@ -42,18 +64,26 @@ const Mensagem = sequelize.define('Mensagem', {
         allowNull: false
     }
 }, {
-    tableName: 'Mensagens',
+    tableName: 'mensagens',
     timestamps: true
 });
 
-const app = express(); // INICIALIZA O EXPRESS
-app.use(cors()); // PERMITE QUE API ACEITE CONEXÃO DO FRONT-END.
-app.use(express.json()); // HABILITA O EXPRESS PARA ENTENDER REQUISIÇÕES COM JSON;
+const app = express();
 
-const port = process.env.PORT || 3000; // PORTA QUE A APLICAÇÃO VAI RODAR
+// CORS configurado
+const corsOptions = {
+    origin: process.env.FRONTEND_URL || '*',
+    credentials: true,
+    optionsSuccessStatus: 200
+};
+
+app.use(cors(corsOptions));
+app.use(express.json());
+
+const port = process.env.PORT || 3000;
+const SECRET = process.env.JWT_SECRET || 'segredo_super_secreto';
 
 // Middleware para autenticação JWT
-const SECRET = 'segredo_super_secreto'; // Em produção, use variável de ambiente
 function autenticarToken(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -65,25 +95,75 @@ function autenticarToken(req, res, next) {
     });
 }
 
-// ROTA DE TESTE
+// Função para criar usuários fixos
+async function criarUsuariosFixos() {
+    const usuariosFixos = [
+        {
+            nome: 'Victor Sobral de Moraes',
+            email: 'v.moraes@ba.estudante.senai.br',
+            senha: 'q1w2e3r4t5*'
+        },
+        {
+            nome: 'Sara Melo',
+            email: 'sara.m.jesus@ba.estudante.senai.br',
+            senha: 'saracapricorniana'
+        },
+        {
+            nome: 'Fernanda Dantas Moreira Cruz',
+            email: 'fernanda.d.cruz@ba.estudante.senai.br',
+            senha: 'fernadagloss'
+        }
+    ];
+
+    console.log('🔄 Verificando usuários fixos...');
+    
+    for (const usuarioData of usuariosFixos) {
+        try {
+            const usuarioExistente = await Usuario.findOne({ 
+                where: { email: usuarioData.email } 
+            });
+
+            if (!usuarioExistente) {
+                const hash = await bcrypt.hash(usuarioData.senha, 10);
+                await Usuario.create({
+                    nome: usuarioData.nome,
+                    email: usuarioData.email,
+                    senha: hash
+                });
+                console.log(`✅ Usuário criado: ${usuarioData.nome}`);
+            } else {
+                console.log(`ℹ️  Usuário já existe: ${usuarioData.nome}`);
+            }
+        } catch (error) {
+            console.error(`❌ Erro ao criar usuário ${usuarioData.email}:`, error.message);
+        }
+    }
+    
+    console.log('✅ Verificação de usuários fixos concluída!\n');
+}
+
+// ROTAS
+
+// Rota de teste
 app.get('/', (req, res) => {
-    res.send('API está funcionando!');
+    res.json({ 
+        mensagem: 'API Bancada MequiDonalds funcionando!',
+        ambiente: process.env.NODE_ENV || 'development',
+        timestamp: new Date().toISOString(),
+        database: 'Vercel Postgres'
+    });
 });
 
-// ROTA PARA LISTAR TODOS OS USUÁRIOS
+// Listar todos os usuários (apenas para debug)
 app.get('/usuarios', async (req, res) => {
-    const usuarios = await Usuario.findAll();
-    res.json(usuarios);
-});
-
-// ROTA PARA CRIAR UM NOVO USUÁRIO (LEGADO - usar /auth/cadastrar)
-app.post('/usuarios', async (req, res) => {
     try {
-        const { nome, email } = req.body;
-        const novoUsuario = await Usuario.create({ nome, email });
-        res.status(201).json(novoUsuario);
+        const usuarios = await Usuario.findAll({
+            attributes: ['id', 'nome', 'email', 'createdAt']
+        });
+        res.json(usuarios);
     } catch (error) {
-        res.status(400).json({ mensagem: "E-mail já cadastrado." });
+        console.error('Erro:', error);
+        res.status(500).json({ mensagem: 'Erro ao buscar usuários.', erro: error.message });
     }
 });
 
@@ -96,9 +176,15 @@ app.post('/auth/cadastrar', async (req, res) => {
         }
         const hash = await bcrypt.hash(senha, 10);
         const novoUsuario = await Usuario.create({ nome, email, senha: hash });
-        res.status(201).json({ id: novoUsuario.id, nome: novoUsuario.nome, email: novoUsuario.email });
+        res.status(201).json({ 
+            id: novoUsuario.id, 
+            nome: novoUsuario.nome, 
+            email: novoUsuario.email 
+        });
     } catch (error) {
-        res.status(400).json({ mensagem: 'Erro ao cadastrar usuário. E-mail pode já estar cadastrado.' });
+        res.status(400).json({ 
+            mensagem: 'Erro ao cadastrar usuário. E-mail pode já estar cadastrado.' 
+        });
     }
 });
 
@@ -106,52 +192,49 @@ app.post('/auth/cadastrar', async (req, res) => {
 app.post('/auth/login', async (req, res) => {
     try {
         const { email, senha } = req.body;
-        console.log('📧 Email recebido:', email);
-        console.log('🔐 Senha recebida:', senha);
+        
+        if (!email || !senha) {
+            return res.status(400).json({ mensagem: 'Email e senha são obrigatórios.' });
+        }
         
         const usuario = await Usuario.findOne({ where: { email } });
+        
         if (!usuario) {
-            console.log('❌ Usuário não encontrado no banco');
             return res.status(401).json({ mensagem: 'Usuário ou senha inválidos.' });
         }
         
-        console.log('✅ Usuário encontrado:', usuario.email);
-        console.log('🔐 Senha no banco:', usuario.senha);
-        
-        // Compatibilidade: aceita senhas hashadas (bcrypt) ou texto plano (legado)
-        let senhaValida = false;
-        
-        // Tenta bcrypt primeiro
-        senhaValida = await bcrypt.compare(senha, usuario.senha);
-        console.log('🔐 Resultado bcrypt.compare:', senhaValida);
-        
-        // Se bcrypt falhar, tenta comparação direta (texto plano)
-        if (!senhaValida) {
-            senhaValida = usuario.senha === senha;
-            console.log('🔐 Resultado comparação direta:', senhaValida);
-        }
+        const senhaValida = await bcrypt.compare(senha, usuario.senha);
         
         if (!senhaValida) {
-            console.log('❌ Senha inválida');
             return res.status(401).json({ mensagem: 'Usuário ou senha inválidos.' });
         }
         
-        const token = jwt.sign({ id: usuario.id, nome: usuario.nome, email: usuario.email }, SECRET, { expiresIn: '2h' });
-        console.log('✅ Login bem-sucedido');
-        res.json({ token, usuario: { id: usuario.id, nome: usuario.nome, email: usuario.email } });
+        const token = jwt.sign(
+            { id: usuario.id, nome: usuario.nome, email: usuario.email }, 
+            SECRET, 
+            { expiresIn: '24h' }
+        );
+        
+        res.json({ 
+            token, 
+            usuario: { 
+                id: usuario.id, 
+                nome: usuario.nome, 
+                email: usuario.email 
+            } 
+        });
     } catch (error) {
         console.error('❌ Erro ao fazer login:', error);
         res.status(500).json({ mensagem: 'Erro ao fazer login.' });
     }
 });
 
-// ROTAS PARA MENSAGENS
-
 // Listar todas as mensagens
 app.get('/mensagens', async (req, res) => {
     try {
-        const mensagens = await Mensagem.findAll({ order: [['id', 'DESC']] });
-        console.log('📨 Mensagens encontradas:', mensagens.length);
+        const mensagens = await Mensagem.findAll({ 
+            order: [['id', 'DESC']] 
+        });
         res.json(mensagens);
     } catch (error) {
         console.error('❌ Erro ao buscar mensagens:', error);
@@ -164,7 +247,9 @@ app.post('/mensagens', autenticarToken, async (req, res) => {
     try {
         const { titulo, texto, dataHora } = req.body;
         if (!titulo || !texto || !dataHora) {
-            return res.status(400).json({ mensagem: 'Título, texto e dataHora são obrigatórios.' });
+            return res.status(400).json({ 
+                mensagem: 'Título, texto e dataHora são obrigatórios.' 
+            });
         }
         const novaMensagem = await Mensagem.create({ titulo, texto, dataHora });
         res.status(201).json(novaMensagem);
@@ -179,12 +264,15 @@ app.put('/mensagens/:id', autenticarToken, async (req, res) => {
         const { id } = req.params;
         const { titulo, texto } = req.body;
         const mensagem = await Mensagem.findByPk(id);
+        
         if (!mensagem) {
             return res.status(404).json({ mensagem: 'Mensagem não encontrada.' });
         }
+        
         if (!titulo || !texto) {
             return res.status(400).json({ mensagem: 'Título e texto são obrigatórios.' });
         }
+        
         mensagem.titulo = titulo;
         mensagem.texto = texto;
         await mensagem.save();
@@ -199,9 +287,11 @@ app.delete('/mensagens/:id', autenticarToken, async (req, res) => {
     try {
         const { id } = req.params;
         const mensagem = await Mensagem.findByPk(id);
+        
         if (!mensagem) {
             return res.status(404).json({ mensagem: 'Mensagem não encontrada.' });
         }
+        
         await mensagem.destroy();
         res.json({ mensagem: 'Mensagem apagada com sucesso.' });
     } catch (error) {
@@ -209,14 +299,42 @@ app.delete('/mensagens/:id', autenticarToken, async (req, res) => {
     }
 });
 
-// SINCRONIZA O MODELO COM O BANCO DE DADOS E INICIA O SERVIDOR
-sequelize.sync().then(async () => {
-    // Verifica quantas mensagens existem
-    const count = await Mensagem.count();
-    console.log(`🚀API rodando em http://localhost:${port}`);
-    console.log('🚀Conectado ao banco de dados MySQL.');
-    console.log(`📊 Total de mensagens no banco: ${count}`);
-    app.listen(port);
-}).catch(err => {
-    console.error('Não foi possível conectar ao banco de dados:');
-});
+// Inicialização do banco e servidor
+let dbInitialized = false;
+
+async function initializeDatabase() {
+    if (dbInitialized) return;
+    
+    try {
+        console.log('🔄 Conectando ao banco de dados...');
+        await sequelize.authenticate();
+        console.log('✅ Conexão com banco de dados estabelecida.');
+        
+        await sequelize.sync();
+        console.log('✅ Modelos sincronizados com o banco.');
+        
+        await criarUsuariosFixos();
+        
+        dbInitialized = true;
+    } catch (error) {
+        console.error('❌ Erro ao conectar com o banco:', error);
+        throw error;
+    }
+}
+
+// Para Vercel (serverless)
+if (process.env.VERCEL) {
+    module.exports = async (req, res) => {
+        await initializeDatabase();
+        return app(req, res);
+    };
+} else {
+    // Para ambiente local
+    initializeDatabase().then(() => {
+        app.listen(port, () => {
+            console.log(`🚀 API rodando em http://localhost:${port}`);
+        });
+    }).catch(err => {
+        console.error('Erro fatal:', err);
+    });
+}
